@@ -8,7 +8,7 @@
 [![GitHub stars](https://img.shields.io/github/stars/omdiidi/omid_skills?style=social)](https://github.com/omdiidi/omid_skills/stargazers)
 [![Built for Claude Code](https://img.shields.io/badge/built%20for-Claude%20Code-d97757)](https://code.claude.com/docs/en/overview)
 
-⭐ **If this helps you, please star the repo — it genuinely helps.**
+⭐ **If this helps you, please star the repo - it genuinely helps.**
 
 </div>
 
@@ -157,7 +157,7 @@ work the same.
 <details>
 <summary><b>macOS asked to let something control Terminal. Is that expected?</b></summary>
 
-Yes. The first time it auto-compacts, macOS asks to let it control Terminal — click OK. If you
+Yes. The first time it auto-compacts, macOS asks to let it control Terminal - click OK. If you
 clicked Don't Allow: System Settings → Privacy & Security → Automation → allow it.
 </details>
 
