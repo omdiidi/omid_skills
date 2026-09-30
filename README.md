@@ -15,32 +15,29 @@
 ---
 
 This is a setup kit for **[Claude Code](https://code.claude.com/docs/en/overview)**, Anthropic's AI
-coding tool. You need Claude Code installed first; the link above walks you through it.
+coding tool. Install Claude Code first, then come back here.
 
-Vibe coding gets you a prototype. This is the step after that: **agentic engineering.** Instead of
-one model doing everything in one long chat, work flows through a chain of specialists. One plans,
-one builds, several review, and a second model (OpenAI's Codex) cross-checks the result so Claude
-isn't grading its own homework. And because it saves its place before the chat runs out of memory,
-a build can keep going for hours (tested up to 23 hours non-stop).
+A multi-model web of commands, built to be driven dynamically by an agent - the answer to vibe
+coding. **This is agentic engineering.**
 
-You don't need to be a programmer to install it. Claude installs it for you.
+This is a web of specialized commands that agents call as they work. Each command can trigger
+multiple specialist subagents for research, planning, implementation, testing, or review. Work
+flows through a chain of experts instead of a single model. And with a system built to preserve
+context, decisions, and progress across compactions (tested up to 23 hours non-stop), builds can
+run for hours without losing track of their mission.
+
+Use each model for what it does best. Claude handles architecture, planning, and big-picture
+thinking. Codex handles precision, correctness, security, and verification. No single model
+carries the full workload - each is used where it's proven to perform best. The result is higher
+quality, more scalable, and much closer to what real software engineering with AI should look like.
 
 ## Quick start
 
-You need git. If Claude says git is missing on a Mac, it will ask you to install Apple's
-command-line tools (a popup appears).
+Paste this into your Claude Code chat:
 
-> Open Claude Code and paste this:
->
-> ```
-> Clone https://github.com/omdiidi/omid_skills into ~/.claude-kit and follow its SETUP.md
-> ```
->
-> That's it. Claude checks your computer, asks you 2 or 3 plain questions, installs everything,
-> and tells you what it did. Then restart Claude Code.
-
-Built on macOS first. It also works on Linux and Windows (through WSL); the few Mac-only extras
-(automatic compaction, usage numbers in the status bar) simply switch themselves off there.
+```
+Clone https://github.com/omdiidi/omid_skills into ~/.claude-kit and follow its SETUP.md
+```
 
 ## What you get
 
