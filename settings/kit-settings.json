@@ -1,0 +1,160 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__KIT__/scripts/progress/on-session-start-cleanup.sh",
+            "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "compact|resume|startup|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__KIT__/scripts/hooks/post-compact-primer.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash __KIT__/scripts/hooks/stale-handoff-guard.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash __KIT__/scripts/hooks/line-reassert-identity.sh",
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash __KIT__/scripts/hooks/line-replies-notice.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__KIT__/scripts/hooks/ctx-gate-on-prompt-submit.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "__KIT__/scripts/hooks/mission-pending-reask.sh",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__KIT__/scripts/hooks/auto-compact-after-pre-compact.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "__KIT__/scripts/hooks/line-apply-rename.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "__KIT__/scripts/hooks/mission-liveness.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__KIT__/scripts/hooks/ctx-gate-precompact-safety.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 __KIT__/scripts/hooks/no-detach-gate.py"
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash __KIT__/scripts/hooks/shared-path-overwrite-guard.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__chrome-devtools__select_page|mcp__chrome-devtools__new_page",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 __KIT__/scripts/hooks/devtools-no-focus-steal.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "__HOME__/.claude/kit-statusline.sh"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(bash __KIT__/scripts/hooks/mission-write.sh:*)",
+      "Bash(bash __KIT__/scripts/codex-exec.sh:*)",
+      "Bash(CODEX_EFFORT=high bash __KIT__/scripts/codex-exec.sh:*)",
+      "Bash(bash ~/.claude-kit/scripts/codex-exec.sh:*)",
+      "Bash(CODEX_EFFORT=high bash ~/.claude-kit/scripts/codex-exec.sh:*)",
+      "Bash(CODEX_EFFORT=xhigh bash ~/.claude-kit/scripts/codex-exec.sh:*)",
+      "Bash(CODEX_MODEL=gpt-6-sol CODEX_EFFORT=xhigh bash ~/.claude-kit/scripts/codex-exec.sh:*)",
+      "Bash(bash \"$HOME/.claude-kit/scripts/codex-exec.sh\":*)",
+      "Bash(CODEX_EFFORT=high CODEX_TIMEOUT_SECS=3600 bash \"$HOME/.claude-kit/scripts/codex-exec.sh\":*)",
+      "Bash(bash ~/.claude-kit/scripts/merge-wave.sh:*)",
+      "Bash(node ~/.claude-kit/scripts/verify-parallel-wave.mjs:*)",
+      "Bash(bash \"$HOME/.claude-kit/scripts/hooks/post-compact-resume-step2.sh\":*)",
+      "Bash(bash \"$HOME/.claude-kit/scripts/handoff-smoke-check.sh\":*)",
+      "Bash(python3 \"$HOME/.claude-kit/scripts/line-agent-communicator.py\":*)"
+    ]
+  },
+  "crossSessionInbound": "accept",
+  "subagentPromptCacheTtl": "1h"
+}

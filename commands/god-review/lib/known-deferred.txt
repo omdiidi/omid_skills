@@ -1,0 +1,5 @@
+# Findings explicitly deferred — Phase E verification subtracts these from the finding count.
+# Format: category:reason
+# These will be re-flagged by /god-review on every run; that's expected.
+clarity:orchestrator-line-count (deferred to v2 — orchestrator split into per-phase files)
+documentation:agent-count-math-drift (~36 typical vs 47 max — both correct in different contexts)

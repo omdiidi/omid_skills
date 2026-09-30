@@ -1,0 +1,456 @@
+#!/usr/bin/env bash
+# statusline.sh (installed as ~/.claude/kit-statusline.sh)
+# Claude Code statusLine command — receives JSON blob on stdin.
+# Usage fields (time-left, sess%, wk%, wk-reset) are OPT-IN: they render only on macOS
+# when ~/.claude/kit-usage-enabled exists (install.sh --usage=on writes it). They come
+# from ~/.claude/ratelimit.json, populated by $HOME/.claude-kit/scripts/refresh-ratelimit.sh
+# (OAuth token from the macOS keychain). Without the marker those fields are hidden.
+# Fields still used from stdin: model.display_name, workspace.current_dir,
+#   transcript_path, context_window.*, effort.level, session_id.
+#
+# --ctx-only: read the same stdin JSON, write ~/.claude/progress/ctx-<sid>.txt (the
+#   context-% broker the ctx-gate hooks read), print NOTHING, exit 0. Used by the
+#   kit-statusline-wrap.sh wrapper when the user keeps their own statusLine command.
+
+# Do NOT use -e: partial failures must not abort the whole status line
+set -uo pipefail
+
+# ── ANSI colors ──────────────────────────────────────────────────────────────
+RED='\033[0;31m'
+YELLOW='\033[0;33m'
+GREEN='\033[0;32m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+DIM='\033[2m'
+LIGHTBLUE='\033[38;5;117m'   # popping light blue — statusline line 2
+RESET='\033[0m'
+
+CTX_ONLY=0
+[ "${1:-}" = "--ctx-only" ] && CTX_ONLY=1
+
+# ── Read stdin once ───────────────────────────────────────────────────────────
+INPUT=$(cat)
+
+jq_get() { echo "$INPUT" | jq -r "${1} // empty" 2>/dev/null || true; }
+
+# Usage fields are opt-in (macOS only + marker file). Off => hidden, no refresh started.
+USAGE_ENABLED=0
+if [ "$(uname -s)" = Darwin ] && [ -f "$HOME/.claude/kit-usage-enabled" ]; then
+  USAGE_ENABLED=1
+fi
+
+# ── 1. Context window usage ───────────────────────────────────────────────────
+TRANSCRIPT=$(jq_get '.transcript_path')
+CTX_USED_PCT=$(jq_get '.context_window.used_percentage')
+CTX_SIZE=$(jq_get '.context_window.context_window_size')
+MODEL_ID=$(jq_get '.model.id')
+
+# Context window size: the harness-supplied value first, else a 200k default.
+case "$CTX_SIZE" in
+  ''|0|null|*[!0-9]*) CTX_SIZE=200000 ;;
+esac
+
+# Try pre-calculated percentage first, then fall back to transcript counting
+if [ -n "$CTX_USED_PCT" ] && [ "$CTX_USED_PCT" != "null" ]; then
+  CTX_PCT=$(printf '%.0f' "$CTX_USED_PCT" 2>/dev/null || echo "")
+else
+  CTX_PCT=""
+  # Count tokens from transcript JSONL
+  if [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ]; then
+    # Sum input+cache tokens from the most recent assistant message
+    TOKENS=$(tail -200 "$TRANSCRIPT" 2>/dev/null \
+      | jq -s '
+          [ .[]
+            | select(.type == "assistant" or (.message.role == "assistant"))
+          ] | last
+          | (
+              (.message.usage.input_tokens // 0)
+            + (.message.usage.cache_read_input_tokens // 0)
+            + (.message.usage.cache_creation_input_tokens // 0)
+            + (.usage.input_tokens // 0)
+            + (.usage.cache_read_input_tokens // 0)
+            + (.usage.cache_creation_input_tokens // 0)
+            )
+        ' 2>/dev/null || echo "0")
+    if [ -n "$TOKENS" ] && [ "$TOKENS" != "0" ] && [ "$TOKENS" != "null" ]; then
+      CTX_PCT=$(awk "BEGIN { printf \"%.0f\", ($TOKENS / $CTX_SIZE) * 100 }" 2>/dev/null || echo "")
+    fi
+  fi
+fi
+
+# Format context field with color
+if [ -n "$CTX_PCT" ]; then
+  if [ "$CTX_PCT" -gt 80 ] 2>/dev/null; then
+    CTX_FIELD="${RED}${BOLD}ctx ${CTX_PCT}%${RESET}"
+  elif [ "$CTX_PCT" -gt 60 ] 2>/dev/null; then
+    CTX_FIELD="${YELLOW}ctx ${CTX_PCT}%${RESET}"
+  else
+    CTX_FIELD="${GREEN}ctx ${CTX_PCT}%${RESET}"
+  fi
+else
+  CTX_FIELD="${DIM}ctx —${RESET}"
+fi
+
+# ── 8. ctx-gate broker write ──────────────────────────────────────────────────
+# Writes the harness-supplied context % to ~/.claude/progress/ctx-<sid>.txt so
+# the ctx-gate hooks can read it without walking the transcript themselves.
+# Side-effect only; never emits to stdout (would corrupt statusline). All errors
+# silenced — broker failure must not abort statusline rendering.
+# Defined here (before rendering) so --ctx-only can call it and exit early.
+SESSION_ID=$(jq_get '.session_id')
+SAFE_SID=$(printf '%s' "$SESSION_ID" | tr -cd 'A-Za-z0-9_-' | head -c 128 || true)
+
+write_ctx_broker() {
+  if [ -n "$SAFE_SID" ]; then
+    CTX_BROKER_DIR="$HOME/.claude/progress"
+    CTX_BROKER_FILE="$CTX_BROKER_DIR/ctx-${SAFE_SID}.txt"
+    if [ ! -d "$CTX_BROKER_DIR" ]; then
+      mkdir -p "$CTX_BROKER_DIR" 2>/dev/null || true
+      chmod 700 "$CTX_BROKER_DIR" 2>/dev/null || true
+    fi
+    # Validate CTX_PCT is purely numeric 0-100 before writing (per codex-review Depth):
+    # `printf '%.0f'` can crash on non-numeric input, leaving CTX_PCT empty; previous behavior
+    # was to delete the sidecar on empty, which silently disabled all gate hooks until next render.
+    # New behavior: only write when CTX_PCT is a valid integer 0-100; otherwise PRESERVE
+    # the existing sidecar (last-known-good) so transient render glitches don't disable the gate.
+    case "$CTX_PCT" in
+      ''|*[!0-9]*) : ;;  # empty or non-numeric — keep last-known-good
+      *)
+        if [ "$CTX_PCT" -ge 0 ] 2>/dev/null && [ "$CTX_PCT" -le 100 ] 2>/dev/null; then
+          CTX_BROKER_TMP="${CTX_BROKER_FILE}.tmp.$$"
+          ( umask 077 && printf '%s\n' "$CTX_PCT" > "$CTX_BROKER_TMP" ) 2>/dev/null || true
+          { [ -f "$CTX_BROKER_TMP" ] && mv "$CTX_BROKER_TMP" "$CTX_BROKER_FILE" 2>/dev/null; } || true
+        fi
+        ;;
+    esac
+  fi
+}
+
+if [ "$CTX_ONLY" = 1 ]; then
+  write_ctx_broker
+  exit 0
+fi
+
+# ── 2–4. Rate-limit data from ~/.claude/ratelimit.json ───────────────────────
+# Only when USAGE_ENABLED=1 (see top). The cache is populated by
+# $HOME/.claude-kit/scripts/refresh-ratelimit.sh (runs in background).
+# If cache is missing or older than 5 minutes, kick off a background refresh
+# (nohup + disown so it survives shell exit and doesn't block rendering).
+# Stale-but-not-ancient data (up to 1 h) is still displayed; beyond 1 h shows —.
+
+NOW_EPOCH=$(date "+%s")
+RL_CACHE="$HOME/.claude/ratelimit.json"
+RL_REFRESH="$HOME/.claude-kit/scripts/refresh-ratelimit.sh"
+REFRESH_INTERVAL=300   # 5 minutes
+STALE_CUTOFF=3600      # 1 hour — beyond this show — instead of old data
+
+RL_FETCHED_AT=0
+RL_FIVE_H_RESET=""
+RL_FIVE_H_UTIL=""
+RL_FIVE_H_STATUS=""
+RL_SEVEN_D_RESET=""
+RL_SEVEN_D_UTIL=""
+RL_SEVEN_D_STATUS=""
+
+if [ "$USAGE_ENABLED" != 1 ]; then
+  :  # usage fields disabled: no cache read, no background refresh
+elif [ -f "$RL_CACHE" ]; then
+  # SECURITY: ratelimit.json is written from raw HTTP response headers, so every
+  # value in it originated OFF this machine and is untrusted. It is read here
+  # WITHOUT eval (an eval here was a shell-injection sink). One python3 call
+  # emits exactly 7 fields, in a fixed order, one per line - each coerced to its
+  # declared type (int / float / status token) and emptied if it will not coerce,
+  # so no cached value can carry a newline that breaks the one-field-per-line
+  # framing, and none can survive as anything but a plain scalar.
+  # Field order is the ratelimit.json key contract shared with
+  # scripts/refresh-ratelimit.sh; change one end and you change the other.
+  _rl_raw=$(python3 - "$RL_CACHE" <<'PYEOF' 2>/dev/null || true
+import json, re, sys
+
+# \Z not $ - `$` also matches just before a trailing newline, which would let a
+# status of "allowed\n" through and break the one-field-per-line framing below.
+STATUS_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}\Z")
+
+
+def as_int(value):
+    try:
+        return str(int(value))
+    except (TypeError, ValueError):
+        return ""
+
+
+def as_float(value):
+    try:
+        return repr(float(value))
+    except (TypeError, ValueError):
+        return ""
+
+
+def as_status(value):
+    return value if isinstance(value, str) and STATUS_RE.match(value) else ""
+
+
+try:
+    with open(sys.argv[1]) as f:
+        d = json.load(f)
+    if not isinstance(d, dict):
+        raise ValueError("ratelimit cache is not an object")
+    fields = [
+        as_int(d.get("fetched_at")),
+        as_int(d.get("five_h_reset")),
+        as_float(d.get("five_h_util")),
+        as_status(d.get("five_h_status")),
+        as_int(d.get("seven_d_reset")),
+        as_float(d.get("seven_d_util")),
+        as_status(d.get("seven_d_status")),
+    ]
+    sys.stdout.write("\n".join(fields) + "\n")
+except Exception:
+    sys.exit(1)
+PYEOF
+)
+
+  # Positional reads - no eval, no expansion of any cached value.
+  {
+    IFS= read -r RL_FETCHED_AT
+    IFS= read -r RL_FIVE_H_RESET
+    IFS= read -r RL_FIVE_H_UTIL
+    IFS= read -r RL_FIVE_H_STATUS
+    IFS= read -r RL_SEVEN_D_RESET
+    IFS= read -r RL_SEVEN_D_UTIL
+    IFS= read -r RL_SEVEN_D_STATUS
+  } <<RLEOF || true
+$_rl_raw
+RLEOF
+
+  # Belt-and-braces: these feed arithmetic ($((…)) re-evaluates its operands) and
+  # `date -r`, so re-assert the shape in shell too. Anything unexpected degrades
+  # to empty, which every consumer below already renders as a dim placeholder.
+  case "$RL_FETCHED_AT"    in ''|*[!0-9]*)              RL_FETCHED_AT=0 ;; esac
+  case "$RL_FIVE_H_RESET"  in *[!0-9]*)                 RL_FIVE_H_RESET="" ;; esac
+  case "$RL_SEVEN_D_RESET" in *[!0-9]*)                 RL_SEVEN_D_RESET="" ;; esac
+  case "$RL_FIVE_H_UTIL"   in ''|*[!0-9.eE+-]*)         RL_FIVE_H_UTIL="" ;; esac
+  case "$RL_SEVEN_D_UTIL"  in ''|*[!0-9.eE+-]*)         RL_SEVEN_D_UTIL="" ;; esac
+  case "$RL_FIVE_H_STATUS" in *[!A-Za-z0-9_-]*)         RL_FIVE_H_STATUS="" ;; esac
+  case "$RL_SEVEN_D_STATUS" in *[!A-Za-z0-9_-]*)        RL_SEVEN_D_STATUS="" ;; esac
+
+  CACHE_AGE=$(( NOW_EPOCH - RL_FETCHED_AT ))
+
+  # Background refresh if stale
+  if [ "$CACHE_AGE" -gt "$REFRESH_INTERVAL" ] && [ -f "$RL_REFRESH" ]; then
+    nohup bash "$RL_REFRESH" >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+  fi
+
+  # Drop the values if the cache is too old (the fields were read above so that
+  # fetched_at and the data come from a single python3 fork on the render path).
+  if [ "$CACHE_AGE" -gt "$STALE_CUTOFF" ]; then
+    RL_FIVE_H_RESET=""
+    RL_FIVE_H_UTIL=""
+    RL_FIVE_H_STATUS=""
+    RL_SEVEN_D_RESET=""
+    RL_SEVEN_D_UTIL=""
+    RL_SEVEN_D_STATUS=""
+  fi
+else
+  # No cache at all — kick off refresh and carry on with empty fields
+  if [ -f "$RL_REFRESH" ]; then
+    nohup bash "$RL_REFRESH" >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+  fi
+fi
+
+# ── 2. Time left in 5-hour window ────────────────────────────────────────────
+SESSION_TIME_LEFT="—"
+
+if [ -n "$RL_FIVE_H_RESET" ] && [ "$RL_FIVE_H_RESET" != "0" ]; then
+  SECS_LEFT=$(( RL_FIVE_H_RESET - NOW_EPOCH ))
+  if [ "$SECS_LEFT" -gt 0 ]; then
+    HRS=$(( SECS_LEFT / 3600 ))
+    MINS=$(( (SECS_LEFT % 3600) / 60 ))
+    SESSION_TIME_LEFT="${HRS}h ${MINS}m left"
+  else
+    SESSION_TIME_LEFT="—"
+  fi
+fi
+
+# Color: red if < 30 min, green if rate_limited (still show countdown), cyan otherwise
+if [ "$RL_FIVE_H_STATUS" = "rate_limited" ]; then
+  SESSION_FIELD="${GREEN}${SESSION_TIME_LEFT}${RESET}"
+elif [ -n "$RL_FIVE_H_RESET" ] && [ "$RL_FIVE_H_RESET" != "0" ]; then
+  SECS_REMAIN=$(( RL_FIVE_H_RESET - NOW_EPOCH ))
+  if [ "$SECS_REMAIN" -lt 1800 ] && [ "$SECS_REMAIN" -gt 0 ]; then
+    SESSION_FIELD="${RED}${SESSION_TIME_LEFT}${RESET}"
+  else
+    SESSION_FIELD="${CYAN}${SESSION_TIME_LEFT}${RESET}"
+  fi
+else
+  SESSION_FIELD="${DIM}${SESSION_TIME_LEFT}${RESET}"
+fi
+
+# Debug output when CLAUDE_STATUSLINE_DEBUG=1
+if [ "${CLAUDE_STATUSLINE_DEBUG:-0}" = "1" ]; then
+  echo "[DEBUG] rl_cache_age : $(( NOW_EPOCH - RL_FETCHED_AT ))s" >&2
+  echo "[DEBUG] five_h_reset : $RL_FIVE_H_RESET ($(date -r "${RL_FIVE_H_RESET:-0}" "+%Y-%m-%d %H:%M:%S %Z" 2>/dev/null || echo 'n/a'))" >&2
+  echo "[DEBUG] five_h_util  : $RL_FIVE_H_UTIL  status=$RL_FIVE_H_STATUS" >&2
+  echo "[DEBUG] seven_d_util : $RL_SEVEN_D_UTIL  status=$RL_SEVEN_D_STATUS" >&2
+  echo "[DEBUG] time_left    : $SESSION_TIME_LEFT" >&2
+fi
+
+# ── 3. Session usage (5-hour rate limit) ─────────────────────────────────────
+# The utilization value is cache-borne (off-machine origin), so it goes to python
+# via argv - never interpolated into the -c program text. One fork yields both
+# numbers: "<percent-left> <percent-used>".
+if [ -n "$RL_FIVE_H_UTIL" ]; then
+  _five_pcts=$(python3 -c 'import sys; u = float(sys.argv[1]); print(round((1 - u) * 100), round(u * 100))' "$RL_FIVE_H_UTIL" 2>/dev/null || echo "")
+  SESSION_USAGE_LEFT="${_five_pcts%% *}"
+  UTIL_INT="${_five_pcts##* }"
+  [ -n "$_five_pcts" ] || UTIL_INT=0
+  if [ -n "$SESSION_USAGE_LEFT" ]; then
+    if [ "$UTIL_INT" -gt 90 ] 2>/dev/null; then
+      SESSION_USAGE_FIELD="${RED}${SESSION_USAGE_LEFT}% sess${RESET}"
+    elif [ "$UTIL_INT" -gt 75 ] 2>/dev/null; then
+      SESSION_USAGE_FIELD="${YELLOW}${SESSION_USAGE_LEFT}% sess${RESET}"
+    else
+      SESSION_USAGE_FIELD="${GREEN}${SESSION_USAGE_LEFT}% sess${RESET}"
+    fi
+  else
+    SESSION_USAGE_FIELD="${DIM}— sess${RESET}"
+  fi
+else
+  SESSION_USAGE_FIELD="${DIM}— sess${RESET}"
+fi
+
+# ── 4. Weekly usage ───────────────────────────────────────────────────────────
+if [ -n "$RL_SEVEN_D_UTIL" ]; then
+  _week_pcts=$(python3 -c 'import sys; u = float(sys.argv[1]); print(round((1 - u) * 100), round(u * 100))' "$RL_SEVEN_D_UTIL" 2>/dev/null || echo "")
+  WEEK_LEFT="${_week_pcts%% *}"
+  UTIL_WK="${_week_pcts##* }"
+  [ -n "$_week_pcts" ] || UTIL_WK=0
+  if [ -n "$WEEK_LEFT" ]; then
+    if [ "$UTIL_WK" -gt 90 ] 2>/dev/null; then
+      WEEK_FIELD="${RED}${WEEK_LEFT}% wk${RESET}"
+    elif [ "$UTIL_WK" -gt 75 ] 2>/dev/null; then
+      WEEK_FIELD="${YELLOW}${WEEK_LEFT}% wk${RESET}"
+    else
+      WEEK_FIELD="${GREEN}${WEEK_LEFT}% wk${RESET}"
+    fi
+  else
+    WEEK_FIELD="${DIM}— wk${RESET}"
+  fi
+else
+  WEEK_FIELD="${DIM}— wk${RESET}"
+fi
+
+# ── 4b. Weekly reset time (fills the slot the model's "(1M context)" used to hold) ──
+# Format: "wk→6th 4pm" from RL_SEVEN_D_RESET (epoch). Uses `date -r` like the debug
+# line above; pure-bash ordinal suffix — no extra python fork on the render path.
+WEEKRESET_FIELD="${DIM}wk→—${RESET}"
+if [ -n "$RL_SEVEN_D_RESET" ] && [ "$RL_SEVEN_D_RESET" != "0" ]; then
+  _wd=$(date -r "$RL_SEVEN_D_RESET" "+%-d" 2>/dev/null)
+  _wh=$(date -r "$RL_SEVEN_D_RESET" "+%-I" 2>/dev/null)
+  _wm=$(date -r "$RL_SEVEN_D_RESET" "+%M" 2>/dev/null)
+  _wp=$(date -r "$RL_SEVEN_D_RESET" "+%p" 2>/dev/null | tr 'A-Z' 'a-z')
+  if [ -n "$_wd" ] && [ -n "$_wh" ]; then
+    case "$_wd" in
+      11|12|13) _sfx="th" ;;
+      *1)       _sfx="st" ;;
+      *2)       _sfx="nd" ;;
+      *3)       _sfx="rd" ;;
+      *)        _sfx="th" ;;
+    esac
+    if [ "$_wm" = "00" ]; then _wt="${_wh}${_wp}"; else _wt="${_wh}:${_wm}${_wp}"; fi
+    WEEKRESET_FIELD="${CYAN}wk→${_wd}${_sfx} ${_wt}${RESET}"
+  fi
+fi
+
+# ── 5. Effort / model display ─────────────────────────────────────────────────
+MODEL_DISPLAY=$(jq_get '.model.display_name')
+# Drop any "(… context)" parenthetical to keep the line short.
+MODEL_DISPLAY=$(printf '%s' "$MODEL_DISPLAY" | sed -E 's/[[:space:]]*\([^)]*[Cc]ontext[^)]*\)//')
+EFFORT_LEVEL=$(jq_get '.effort.level')
+
+if [ -n "$MODEL_DISPLAY" ] && [ "$MODEL_DISPLAY" != "null" ]; then
+  EFFORT_FIELD="$MODEL_DISPLAY"
+else
+  EFFORT_FIELD="${MODEL_ID:-—}"
+fi
+
+# Append effort level if present and not already encoded in model name
+if [ -n "$EFFORT_LEVEL" ] && [ "$EFFORT_LEVEL" != "null" ] && [ "$EFFORT_LEVEL" != "" ]; then
+  # Map effort levels to short labels
+  case "$EFFORT_LEVEL" in
+    low)    EFFORT_LABEL="[lo]" ;;
+    medium) EFFORT_LABEL="[med]" ;;
+    high)   EFFORT_LABEL="[hi]" ;;
+    xhigh)  EFFORT_LABEL="[xhi]" ;;
+    max)    EFFORT_LABEL="[max]" ;;
+    *)      EFFORT_LABEL="[${EFFORT_LEVEL}]" ;;
+  esac
+  EFFORT_FIELD="${EFFORT_FIELD} ${EFFORT_LABEL}"
+fi
+
+# ── 6. Repo name ──────────────────────────────────────────────────────────────
+CWD=$(jq_get '.workspace.current_dir')
+if [ -z "$CWD" ]; then
+  CWD=$(jq_get '.cwd')
+fi
+if [ -z "$CWD" ]; then
+  CWD="$PWD"
+fi
+
+REPO_NAME=""
+if [ -n "$CWD" ] && [ -d "$CWD" ]; then
+  REPO_NAME=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null \
+    | xargs basename 2>/dev/null || echo "")
+fi
+
+if [ -z "$REPO_NAME" ]; then
+  REPO_NAME=$(basename "$CWD" 2>/dev/null || echo "—")
+fi
+
+REPO_FIELD="${BOLD}${REPO_NAME}${RESET}"
+
+# ── Assemble status line ──────────────────────────────────────────────────────
+# Format (usage on):  ctx 42%  3h12m left  72% sess  85% wk  Opus 4.8 [hi]  wk→6th 4pm  my-repo
+# Format (usage off): ctx 42%  Opus 4.8 [hi]  my-repo
+if [ "$USAGE_ENABLED" = 1 ]; then
+  printf "%b  %b  %b  %b  %b  %b  %b\n" \
+    "$CTX_FIELD" \
+    "$SESSION_FIELD" \
+    "$SESSION_USAGE_FIELD" \
+    "$WEEK_FIELD" \
+    "$EFFORT_FIELD" \
+    "$WEEKRESET_FIELD" \
+    "$REPO_FIELD"
+else
+  printf "%b  %b  %b\n" \
+    "$CTX_FIELD" \
+    "$EFFORT_FIELD" \
+    "$REPO_FIELD"
+fi
+
+# ── 7. Line 2: per-window manual label (set via /line), else worktree name ───
+# Deterministic — ALWAYS renders exactly one line. No active/idle branching, no
+# progress bars. Source: ~/.claude/session-status/<sid>.txt (written by the /line
+# command). Falls back to REPO_NAME (already computed for line 1 above). Never blanks.
+# SESSION_ID/SAFE_SID are defined above (section 8, the ctx-gate broker).
+LINE2_TEXT="$REPO_NAME"
+if [ -n "$SAFE_SID" ]; then
+  LABEL_FILE="$HOME/.claude/session-status/$SAFE_SID.txt"
+  if [ -f "$LABEL_FILE" ]; then
+    _lbl=$(head -1 "$LABEL_FILE" 2>/dev/null | tr -d '\r')
+    [ -n "$_lbl" ] && LINE2_TEXT="$_lbl"
+  fi
+fi
+
+# Defensive truncation; render dim. Always prints exactly one line.
+if [ -n "$LINE2_TEXT" ]; then
+  if [ "${#LINE2_TEXT}" -gt 120 ]; then LINE2_TEXT="$(printf '%s' "$LINE2_TEXT" | cut -c1-119)…"; fi
+  printf "%b\n" "${LIGHTBLUE}${LINE2_TEXT}${RESET}"
+fi
+
+write_ctx_broker
+
+
+exit 0

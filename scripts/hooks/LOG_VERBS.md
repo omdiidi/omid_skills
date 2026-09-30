@@ -1,0 +1,225 @@
+# Hook Log Action Verbs (canonical)
+
+Reference for all action verbs emitted by hook scripts. Maintain grep-pattern
+stability: do not rename a verb without updating every log consumer + this file.
+
+## auto-compact.log (ac_log — via `lib/auto-compact-sentinel.sh:ac_log`)
+
+Used by `arm-auto-compact.sh` and `auto-compact-after-pre-compact.sh`.
+
+| Verb | Script | Meaning |
+|---|---|---|
+| `armed` | arm-auto-compact.sh | Sentinel written successfully; target TTY + nonce prefix logged |
+| `arm-failed` | arm-auto-compact.sh | Sentinel write failed (disk full or permission error) |
+| `FATAL` | arm-auto-compact.sh | Fatal error in arm script; nonce generation failed; reason appended |
+| `disarmed` | arm-auto-compact.sh | Sentinel deleted per user opt-out request |
+| `dry-run` | arm-auto-compact.sh | Dry-run mode; sentinel NOT written; would-arm details logged |
+| `warn` | arm-auto-compact.sh | Non-fatal warning (e.g., automation-probe-failed-or-timed-out) |
+| `stop` | auto-compact-after-pre-compact.sh | Stop hook fired; logs osa_exit + result |
+| `abort` | auto-compact-after-pre-compact.sh | Stop hook aborted before firing; `reason=` appended (own-claude-unresolved, starttime-empty, argv-mismatch, tty-unresolved, not-foreground-leader, identity-churned-pre-fire) — own-ancestry session-correlation verification failed; sentinel left intact for next-Stop retry |
+| `restore` | auto-compact-after-pre-compact.sh | Sentinel restored after a post-claim abort or a non-fire osascript result (no-matching-tab etc.) so the next Stop retries; `reason=` + `result=` appended |
+| `restore-FAILED` | auto-compact-after-pre-compact.sh | The post-claim sentinel restore `mv` itself failed (rare); the pending-handoff primer is the remaining recovery |
+| `fired-unconfirmed` | auto-compact-after-pre-compact.sh | `/compact` was DELIVERED but a compaction is not yet proven, so the sentinel is retained and `attempt=<N>` counted; post-compact-primer.sh retires it on a confirmed source=compact start. Firing is delivery, not effect |
+| `give-up` | auto-compact-after-pre-compact.sh | `/compact` typed 3 times with no confirmed compaction; the sentinel is consumed to stop retrying and native auto-compact remains the backstop. `attempts=<N>` logged |
+| `retain-FAILED` | auto-compact-after-pre-compact.sh | The retain-after-fire `mv` back to the sentinel path failed; native auto-compact is the remaining backstop. `attempt=<N>` logged |
+| `test-no-fire` | auto-compact-after-pre-compact.sh | AUTO_COMPACT_TEST_NO_FIRE was set; full resolve→verify→claim path ran but the osascript fire was skipped (no keystrokes) — test seam, never set by real Stop hooks |
+| `ac_write_sentinel` | lib/auto-compact-sentinel.sh | Sentinel write skipped in ac_write_sentinel; reason= appended (e.g., oversize) |
+| `invalid` | lib/auto-compact-sentinel.sh | Invalid TTY target detected during sentinel validation; raw value logged |
+| `test` | test-auto-compact.sh | Test harness log entry (not emitted by production scripts) |
+| `skip-sentinel` | lib/auto-compact-sentinel.sh | Sentinel skipped during read; reason= appended |
+| `skip-sentinel-nonce` | lib/auto-compact-sentinel.sh | Sentinel nonce field extraction failed; reason=jq-parse appended |
+
+### Reasons for skip-sentinel
+
+- `reason=symlink` — sentinel path is a symlink (path-swap defense)
+- `reason=oversized` — sentinel exceeds AC_MAX_SENTINEL_BYTES (4096)
+- `reason=jq-parse` — jq parse failure; invalid JSON or filter error
+- `reason=no-cwd-or-invalid-schema` — cwd field absent or schema_version out of range
+- `reason=validate-failed` — _ac_validate_sentinel_path preamble check failed
+
+### handoff: prefix (within auto-compact.log via `handoff_log`)
+
+`handoff_log` delegates to `ac_log` with `handoff:` prefix — no separate log file.
+
+Note: the G5 grep regex may extract `handoff:$1` from the `handoff_log()` function definition
+(`ac_log "handoff:$1"`). This is a function parameter literal, not an emitted verb — it is
+documented here to satisfy the G5 drift checker.
+
+| Verb | Script | Meaning |
+|---|---|---|
+| `handoff:sentinel_armed` | arm-auto-compact.sh | Arm success; SID8 + TTY + CWD logged |
+| `handoff:compact_chained` | auto-compact-after-pre-compact.sh | Stop hook delivered /compact + /post-compact-resume |
+| `handoff:session_started` | post-compact-primer.sh | Primer fired; SID + source logged |
+| `handoff:ctx_broker_invalidated` | post-compact-primer.sh | Stale-broker guard: ctx-<sid>.txt sidecar deleted at a compact/clear boundary so the first post-event UserPromptSubmit doesn't read a stale-high ctx%; SID + source logged |
+| `handoff:handoff_detected` | post-compact-primer.sh | Sentinel matched CWD (R4 D6: logged AFTER resolver sets HANDOFF_PATH); SID8 + file + sentinel_present logged |
+
+### Migration residue GC events (within auto-compact.log)
+
+These verbs are emitted by `auto-compact-after-pre-compact.sh` (Stop hook) during GC.
+R8: breadcrumb-write block removed (identity-via-arg — no breadcrumbs written under R8).
+The GC below sweeps pre-R8 breadcrumbs and session-key files from in-flight sessions.
+
+| Verb | Script | Meaning |
+|---|---|---|
+| `gc_stale_orphan_breadcrumbs` | auto-compact-after-pre-compact.sh | Stale orphan breadcrumbs (>24h old) deleted on Stop event; count= appended (V2-11 migration sweep) |
+
+## ctx-gate.log (ctx_gate_log — via `lib/ctx-gate-config.sh:ctx_gate_log`)
+
+Used by `ctx-gate-on-prompt-submit.sh`, `ctx-gate-precompact-safety.sh`, `post-compact-primer.sh`.
+
+### UserPromptSubmit (submit) events
+
+| Action | Script | Condition |
+|---|---|---|
+| `action=skip reason=no-ctx-sidecar` | ctx-gate-on-prompt-submit.sh | ctx sidecar file missing/unreadable |
+| `action=skip reason=sentinel-fresh` | ctx-gate-on-prompt-submit.sh | Sentinel mtime < 1800s (fresh) |
+| `action=skip reason=sentinel-stat-failed-assume-fresh` | ctx-gate-on-prompt-submit.sh | stat failed on sentinel; assume fresh |
+| `action=reject-symlink-sentinel` | ctx-gate-on-prompt-submit.sh | Sentinel path is a symlink |
+| `action=stale-sentinel reason=future-dated-mtime` | ctx-gate-on-prompt-submit.sh | Sentinel mtime in the future |
+| `action=soft-nudge` | ctx-gate-on-prompt-submit.sh | PCT in [50, 65) (rate-limited to 5% bucket transitions) |
+| `action=important-nudge` | ctx-gate-on-prompt-submit.sh | PCT in [65, 75) (rate-limited to 5% bucket transitions) |
+| `action=force-wrapup` | ctx-gate-on-prompt-submit.sh | PCT >= 75 (always fires; no rate-limit) |
+| `action=skip reason=same-bucket-as-last` | ctx-gate-on-prompt-submit.sh | SOFT/IMPORTANT zone but bucket unchanged since last fire (rate-limit suppression) |
+
+### PreCompact (precompact) events
+
+| Action | Script | Condition |
+|---|---|---|
+| `action=allow-sentinel-fresh` | ctx-gate-precompact-safety.sh | Sentinel fresh (<1800s); let native compact proceed |
+| `action=stale-sentinel` | ctx-gate-precompact-safety.sh | Sentinel exists but is stale; reenforcing block |
+| `action=reject-symlink-sentinel` | ctx-gate-precompact-safety.sh | Sentinel is a symlink |
+| `action=release-extreme-pct` | ctx-gate-precompact-safety.sh | PCT >= HANDOFF_AUTOCOMPACT_BYPASS_PCT (90); release native compact |
+| `action=release-pct-unknown` | ctx-gate-precompact-safety.sh | PCT=? (sidecar unreadable); H13 fail-open — release rather than deadlock |
+| `action=block` | ctx-gate-precompact-safety.sh | No sentinel; PCT known and below release threshold; block native compact |
+
+### SessionStart (primer) events
+
+| Action | Script | Condition |
+|---|---|---|
+| `action=skip reason=no-handoff-file` | post-compact-primer.sh | No CLAUDE.local.md found in cwd or repo root |
+| `action=skip reason=handoff-is-symlink` | post-compact-primer.sh | CLAUDE.local.md is a symlink |
+| `action=skip reason=handoff-oversize` | post-compact-primer.sh | Handoff exceeds HANDOFF_MAX_SIZE_BYTES |
+| `action=stat-failed-mtime-zero stale-check-skipped` | post-compact-primer.sh | stat returned 0; freshness unknown |
+| `action=skip-legacy-sentinel` | post-compact-primer.sh | Sentinel has no cwd field (legacy schema v1) |
+| `sentinel-consumed-on-confirmed-compaction` | post-compact-primer.sh | source=compact with the sentinel present - the NORMAL path under retain-and-confirm. This is where the sentinel is retired, because a compaction demonstrably happened. Replaced `ANOMALY sentinel-still-present-after-compact`, which described the pre-2026-08-02 consume-on-fire design |
+| `sentinel=true\|false marker=true\|false legacy=true\|false age=Ns stale=yes\|no` | post-compact-primer.sh | Final routing decision summary |
+| `primer skip reason=multi-hardlink` | post-compact-primer-helpers.sh / handoff-resolve.sh | Handoff candidate rejected: hardlink count > 1 (swap-attack defense); path + linkcount logged |
+| `primer skip reason=invalid-sentinel-basename` | post-compact-primer-helpers.sh | Sentinel SID contains characters outside `[A-Za-z0-9_-]`; path-traversal defense |
+| `primer warn reason=sentinel-without-sid-file` | post-compact-primer.sh | Sentinel present but no SID-tagged file found; advisory warning |
+| `primer warn reason=multi-marker-detected` | post-compact-primer-helpers.sh (primer_check_marker) | RQ-07 (R6 HZ-34): handoff file has more than one canonical END-OF-HANDOFF marker at column 0; MARKER_PRESENT set to "tampered"; primer emits distinct tamper warning |
+| `primer skip reason=sid-known-no-tagged-file` | post-compact-primer-helpers.sh / handoff-resolve.sh | SID known but no SID-tagged CLAUDE.local.<sid8>.md found; R4 D3 fail-closed |
+| `primer skip reason=resolver-marker-sid-mismatch sid8=<sid8> marker_sid=<observed> file=<path>` | handoff-resolve.sh | R7-INC-02 (F2): SID-tagged file marker content-check failed — file's marker sid= does not match requested sid8; cross-track file rejected |
+| `primer skip reason=resolver-sid-tagged-no-marker session_id=<id> file=<path>` | handoff-resolve.sh | R9-R2 (HIGH-1 fail-closed): a SID-tagged file with NO END-OF-HANDOFF marker is NEVER accepted (regardless of mtime) — markerless files cannot be identity-verified. Replaces the former `resolver-no-marker-non-legacy` mtime-gated verb; legacy-mtime tolerance now applies only to the SID-unknown alias path |
+| ~~`alias-with-marker-match` / `alias-marker-mismatch` / `alias-future-mtime`~~ | handoff-resolve.sh | **[R8/R9: DELETED — these F4 alias-probe verbs are NO LONGER EMITTED.** The F4 alias-with-marker-binding probe (Defense H12) was removed in R8 V2-6: with full-UUID filenames + identity-via-arg there is no alias path for a known session_id (the resolver returns rc=2 instead). Retained as a tombstone so a grep-based consumer does not expect these verbs.] |
+| `primer skip reason=stat-failed` | handoff-resolve.sh | stat() failed on handoff candidate — cannot verify linkcount; fail-closed (H10 fix-sweep) |
+| `step2_terminal` | post-compact-resume-step2.sh | step2.sh reached a terminal STATE; R8/R9 state= field names one of: ok, no-handoff, no-session-arg, invalid-session-arg, arg-not-my-session, self-unverifiable, oversize, sid-known-hardlinked, invalid-handoff-name, handoff-mutated-mid-read, multi-marker-detected, snapshot-failed |
+| `step2 r9_self_check ok` | post-compact-resume-step2.sh | R9-R2 observability: the consumer-layer arg-vs-self check ran AND passed (self==arg); distinguishes a double-checked STATE=ok from a degraded one |
+| `handoff_detected` | post-compact-primer.sh | Sentinel matched CWD — see handoff: prefix table above |
+| `handoff_mutated_mid_read` | post-compact-resume-step2.sh | Handoff file ino:dev:size changed between snapshot and final emit — file was mutated mid-pipeline (e.g., a concurrent writer swapped it). STATE=handoff-mutated-mid-read emitted; ingestion refused |
+| `primer_sentinel_bind` | post-compact-primer-helpers.sh (primer_find_sentinel_for_cwd) | Sentinel selection result: session_id= is the current session SID (from hook JSON); mode=strict means the exact sentinel for this session was found; mode=strict-miss means strict binding searched but no sentinel matched; mode=legacy-fallback means session_id was empty and glob-scan was used |
+| `arm_failed reason=empty-sid` | lib/auto-compact-sentinel.sh (ac_resolve_session_id) | Session ID resolved to empty string — sentinel write refused. Prevents auto-compact-.json collision where all empty-SID sessions share one sentinel |
+| `no-session-arg` | post-compact-resume-step2.sh | R8: /post-compact-resume invoked with no session_id arg — delivery degraded; fail-safe refuse (never guess) |
+| `invalid-session-arg` | post-compact-resume-step2.sh | R8: session_id arg contains characters outside [A-Za-z0-9_-] — refuse |
+| `arg-not-my-session` | post-compact-resume-step2.sh | R9 HIGH-1 (wrong-load guard): session_id arg != this session's own id (CLAUDE_CODE_SESSION_ID) — command mis-delivered/mis-pasted; refuse to load another session's handoff. self= and arg= logged |
+| `self-unverifiable` | post-compact-resume-step2.sh | R9-Round2 (fail-closed): this session's own id is unreadable (CLAUDE_CODE_SESSION_ID + CLAUDE_SESSION_ID both empty) so arg-vs-self cannot run — REFUSE rather than degrade to content-only (degrading is a wrong-load path in a shared repo-root). arg= logged. Never fires on supported Claude Code (env var always set) |
+
+## line-rename.log (line-apply-rename.sh `lr_log`) and line-reassert.log (line-reassert-identity.sh `log_line`)
+
+Own loggers, not ac_log/ctx_gate_log/handoff_log, so the G5 drift scan does not cover them; listed
+here as bullets (not table rows) so the G5 reverse scan does not look for ac_log emit sites.
+
+`~/.claude/logs/line-rename.log` - the Stop hook that types `/rename <name>` for a `/line` request:
+
+- `fired` - `/rename` delivered into this session's own Terminal tab; `tty=` + `name=` logged; request removed.
+- `defer` - an auto-compact sentinel for this session is armed or mid-claim; request kept untouched for a later Stop.
+- `abort` - a verification or the osascript failed before anything was typed; `reason=` (own-claude-unresolved, starttime-empty, argv-mismatch, tty-unresolved, not-foreground-leader, identity-churned-pre-fire, osascript-failed/...) and whether the request was kept for its one retry.
+- `give-up` - the request already had its retry; dropped (the name stays saved in the chat and applies on the next restart).
+- `stale` - request older than 1 hour (or dated in the future); deleted without typing.
+- `drop` - request rejected: `reason=symlink`, `oversized`, or `malformed` (bad JSON, or a name that is not a peer handle: `[a-z0-9-]{1,60}`, no leading hyphen).
+- `unsupported-terminal` - not a plain Terminal.app tab (iTerm, tmux, screen); request deleted, nothing typed.
+- `test-seam-ignored` - `LINE_RENAME_OSASCRIPT` was set with the real HOME; the override was refused.
+
+`~/.claude/logs/line-reassert.log` - the SessionStart identity re-assert:
+
+- `reassert` - the peer address was re-derived from the caption; `nameSource=` + `rc=` logged.
+- `display-name` - on startup/resume the transcript's last title did not match the window's peer handle; `result=` is `written` (record + /rename request), `written-no-request` (non-Terminal.app), `no-transcript`, `no-handle` (caption has no letters or digits), or `error`.
+
+## MISSION.<sid>.log (mission-write.sh)
+
+The mission-bridge spine has its OWN log file `<canonical_root>/MISSION.<sid>.log` (NOT a shared hook
+log). It is an append-only narrative sidecar to `MISSION.<sid>.md`, written ONLY by the allowlisted CLI
+`mission-write.sh` (which dispatches to `lib/mission-bridge.sh`). These are the CLI **verbs** (argv[1]),
+not free-text log actions. mission-bridge is **fail-LOUD** (the deliberate exception to ctx-gate's
+fail-open posture): a failure surfaces on the single `mission-write: <verb> FAILED rc=N (...)` status line
++ the lib's stderr, but the CLI always `exit 0` so the autonomous `/pre-compact` caller is never aborted.
+The byte-locked invocation prefix is matched by a `Bash(bash …/mission-write.sh:*)` allow rule — do NOT
+rename a verb or move the script without re-issuing the allow rule and updating every caller.
+
+| Verb | Script | Meaning |
+|---|---|---|
+| `create` | mission-write.sh (`mission_create`) | Create the canonical `MISSION.<sid>.md` (nonce-fenced PLAN/DURABLE NOTES/PLAN CHALLENGES/PENDING DECISIONS zones + LOCKED last-line marker), write the immutable `.mission-backups/MISSION.<sid>.birth.md`, and set `mission_path` in the chain manifest. Idempotent no-clobber: exists+verifies → no-op; exists+fails-verify → refuse + fail-LOUD |
+| `log` | mission-write.sh (`mission_log_append`) | Append one byte-capped (`<480`B, `iconv -c` repaired) narrative line to `MISSION.<sid>.log`. Ensures the main file + manifest pointer exist first (no orphan), heals a torn last line, rotates at 256KB into `.mission-backups/…log.<utc>.gz`. Idempotent on a LEADING anchored `^<idtag>\t`; an oversize entry is rerouted to the locked main file as a `note` |
+| `note` | mission-write.sh (`mission_mutate` → DURABLE NOTES) | Append a durable note line into the DURABLE NOTES zone of the main file (locked → verify → backup → plan-drift check → tmp-rewrite → self-verify → atomic rename). Idempotent on `<!-- mid:<idtag> -->` |
+| `challenge` | mission-write.sh (`mission_mutate` → PLAN CHALLENGES) | Append a plan-challenge line into the PLAN CHALLENGES zone (same locked-rewrite path as `note`). Where an untrusted/override-style PLAN line is recorded for human review rather than executed |
+| `pending <slug> <question…>` | mission-write.sh (`mission_pending_mint` → PENDING DECISIONS) | The **NON-BLOCKING** away-policy decision queue: MINT a monotonic `pd:<seq>-<slug>` id (seq = marker `pdseq`+1, machine-assigned + NEVER reused, even across `resolve`), append a `- [pd:<seq>-<slug>] <question>` open-decision line into the PENDING DECISIONS zone AND bump the marker `pdseq` in the SAME locked rewrite, then ECHO `pending ok id=pd:<seq>-<slug>` so the caller uses it for `resolve` + the human-AWAIT `op=<seq>-<slug>`. The monotonic seq guarantees two same-slug decisions get DISTINCT ops (R7-1). Does NOT park the loop — surfaced in the banner for a batched answer next session |
+| `pending-stop <slug> <part> <round> <attempt> <phase> <question…>` | mission-write.sh (`mission_pending_stop_mint`) | The **BLOCKING** mandatory-stop opener (mission-stall-fix R8) — the ONLY human-`AWAIT` barrier opener. ATOMICALLY, under ONE lock: opens the human `AWAIT kind=human op=<seq>-<slug> attempt=<attempt> need=1 got=0` STOP barrier via `mission_await_append` (barrier-FIRST, fail-closed — requires `_MLA_OUTCOME=appended`) AND mints/echoes the pd exactly like `pending` (`pending-stop ok id=pd:<seq>-<slug>`), bumping the marker `pdseq`. Fresh-seq seed = `max(marker pdseq, md-zone-max, log-max)`+1. Fails CLOSED (no pd line, no echo) on a bad slug (`[a-z0-9-]`, `<=64`), an AWAIT line `>=480`B, a `>999999` sequence-exhaust, an arithmetic-invalid seed, or a non-`appended` AWAIT. Distinct fail-closed rc codes (R8r3-R8; `rc=3` = lock-busy is the ONLY retryable one): an EXACT idempotent re-request (same slug+coords+question, pd line PRESENT) returns the existing id; a changed question at the same op = `rc=13`; a DIFFERENT open human barrier = `rc=12`; a CLEARED mission = `rc=10`; an unreadable lifecycle = `rc=11`. **A lost-pd ORPHAN is NOT adopted (R8r2-B/FIX-B):** the original question is GONE with the pd line so it is UNVERIFIABLE — a re-`pending-stop` for that op FAILS CLOSED (`rc=14`), never silently re-binding a possibly-different question to the mandatory STOP. Recovery for a `rc=14` orphan is the safe-ABORT deny: write `outcome=deny` for that op (a lost-question orphan has NO recoverable human answer), close the barrier, and do NOT proceed; open a FRESH pending-stop under a DIFFERENT slug if a decision is still genuinely needed. Unlike `pending`, this PARKS the mission loop (§10/§12.3); it is closed by DECISION → `await got=1` → `resolve` |
+| `resolve` | mission-write.sh (`mission_resolve_pending`) | Strip the matching `- [pd:<id>] …` line (and its paired `<!-- mid:… -->`) from PENDING DECISIONS via locked rewrite, then append a `resolved pd:<id> — <resolution>` narrative to the LOG. Accepts BOTH the echoed `pd:<seq>-<slug>` and the bare `<seq>-<slug>` id (the leading `pd:` is stripped) |
+| `rebaseline` | mission-write.sh (`mission_rebaseline`) | The ONLY path that rewrites the PLAN zone: replace PLAN with a new plan, re-stamp `plan_hash` to match (locked, backed-up, self-verified), then log `PLAN rebaselined (hash re-stamped)` |
+| `render-banner` | mission-write.sh (`mission_render_banner`) | PIVOT A write-side precompute: render the bounded `MISSION.<sid>.banner` (PLAN slice `<=4000`B line-snapped + last-5 log lines + injection-safety framing) atomically. On a verify failure writes a LOUD `CRITICAL: … UNREADABLE/CORRUPT` banner (never silent) and returns 0 so the primer surfaces the alarm |
+| `await` | mission-write.sh (`mission_await_append`) | Open/update the durable `AWAIT` "work in flight" marker (mission-stall-fix §C). Reassembles `<fields>` (part/phase/round/kind/op/attempt/need/got[/started_at]) into the canonical `[mission] AWAIT …` line and appends it via `mission_log_append` (the dedicated lib emitter — BYPASSES `_mw_validate_log`, exactly like `_mw_emit_snapshot`/WORK-START). Idempotent on the `m<N>-await-<op>-r<K>-a<A>-g<G>` idtag; a same-idtag different-content re-append surfaces `COLLISION`. **DECISION-first close (mission-stall-fix R8):** closing a `kind=human` barrier with `got=1` is REFUSED unless a same-op `[mission] DECISION op=<seq>-<slug> outcome=<approve\|deny>` line already exists in the active-gen stream — so a human decision's outcome is ALWAYS durable before the barrier can read resolved |
+
+### Read-only argv-exception verbs (bare-token stdout — NO `mission-write: …` status line)
+
+FOUR verbs break the `<verb> <sid> <root>` dispatcher shape: they are READ-ONLY, take a different argv,
+run BEFORE the root-guard, and print a BARE machine token to stdout (so a STOP-branching caller can read
+it directly — stderr alone cannot block a count-testing caller). All still `exit 0`.
+
+| Verb (argv) | Script | stdout contract |
+|---|---|---|
+| `parse-codex-header <file>` | mission-write.sh (`mission_parse_codex_header`) | The bare `N/4` Codex-passes token parsed from the FIRST full-shape `^Engine: … Codex-passes: N/4 … Verified:` line of `<file>` (anti-spoof: first match only). EMPTY on an absent/malformed header. Diagnostics → stderr |
+| `void-count <sid> <root> <part> <round>` | mission-write.sh (`_void_consecutive_count`) | A bare integer `>=0` = the consecutive gen-current VOID count for part/round; **`-1`** = refused-read sentinel (gen-boundary mismatch, unreadable stream, or non-numeric args). The §5 caller MUST branch on `-1` (STOP), never treat it as `0` |
+| `await-state <sid> <root>` | mission-write.sh (`mission_await_state`) | The bare token for the newest OUTSTANDING AWAIT: `none`, `corrupt`, or `await kind=<job\|human> op=<slug> part=<N> round=<K> attempt=<A> phase=<P> need=<M> got=<G> ready=<0\|1> started_at=<epoch>` (field order matches the lib emit). Outstanding = an `AWAIT` barrier NOT superseded by a later `phase=review` round line / VOID / `PART-DONE` (these supersede JOB barriers only; a `kind=human` STOP is superseded by NOTHING — only its own `got=1` resolves it, D10), with the mission not `MISSION-CLEARED`. The reader emits `ready=1` once `(got&need)==need` (join-ready) — the wake routine, not this reader, decides bank-vs-wait. `corrupt` = a refused gen-boundary read → §10 STOP-LOUD. A `..` root fails safe to `none`. The `/mission` wake routine reads it directly |
+| `cursor-hash <sid> <root>` | mission-write.sh (`mission_cursor_hash`) | A bare 64-hex sha256 digest of the current-generation `[mission]` state stream (archive-inclusive, rotation-invariant): the §12 wake routine's change-detection cursor — two wakes that read identical state hash identically, ANY append changes it. `corrupt` (rc 3) on a refused gen-boundary read or a missing sha tool (never an empty string — two empties would compare EQUAL and disable the guard) → §10 STOP-LOUD. A `..` root fails safe |
+
+### mission-write.sh status line (stdout, exactly one per invocation — every verb EXCEPT the four above)
+
+| Output | Script | Meaning |
+|---|---|---|
+| `mission-write: <verb> ok` | mission-write.sh | Lib call returned rc=0 (append succeeded, or an idempotent dedup no-op) |
+| `mission-write: <verb> COLLISION (…)` | mission-write.sh | log/note/challenge: the idtag already exists with DIFFERENT content. The conductor MUST STOP, re-derive gen/round numbering, and NOT assume the entry was banked. (`pending` no longer collides: it MINTS a fresh monotonic `pd:<seq>-<slug>` each call.) |
+| `mission-write: <verb> REROUTED-TO-NOTES (…)` | mission-write.sh | log: a `>=480`B free-text entry was rerouted into the main file's NOTES zone. The conductor rewrites it TERSE and re-logs until it gets `ok` |
+| `mission-write: <verb> FAILED rc=N (<reason>)` | mission-write.sh | Validator/lib refused with rc=N. **rc=4** on a PART-DONE or live-verify write BLOCKS retirement/advance (the carve-out — stale/absent live-verify, an unclean dry-count fold, or a gen-boundary mismatch). **rc=5** = the idtag's `g<G>-` gen prefix does not match the current gen. rc=127 = lib not found/sourced. Otherwise reason = `see stderr` (lib stays fail-LOUD on stderr) |
+| `mission-write: usage: …` | mission-write.sh | Unknown verb or missing required args; no mutation attempted |
+
+### `[mission]` structured LOG-line conventions (written via the `log` verb)
+
+These are NOT new CLI verbs. The `/mission` conductor reuses the existing `log` verb (above) and passes
+structured `[mission] …`-prefixed payloads as the narrative line. Each shape is validated against the
+AUTHORITATIVE per-shape grammar table in `mission-write.sh` (`_mw_validate_log`): control chars are
+refused; the persisted line (gen-prefixed idtag + TAB + entry) must be `<480`B; an idtag whose part/round/
+phase fields disagree with the entry is refused; and an unknown `[mission]` leading token is refused
+(`REFUSED: unknown-shape`). Field order is part of the grep contract — do not reorder. The bridge stores
+accepted lines verbatim in `MISSION.<sid>.log`; a resume agent greps them to reconstruct loop state.
+
+**Generation prefix.** Every idtag below may carry a leading `g<G>-` generation prefix (minted at
+rebaseline; gen-1 idtags are UNPREFIXED; EMPTY idtags are exempt). Reads that must not bleed across a
+rebaseline (the PART-DONE precondition, the VOID count, the FAIL tally) slice the archive-inclusive stream
+at the latest `MISSION-REBASELINED` boundary.
+
+| Line shape (full `[mission] …` payload) | idtag | Meaning |
+|---|---|---|
+| `[mission] part=<N> name=<slug> phase=<research\|plan\|implement\|review\|fix> round=<K> dry=<0-2>[ findings=<count>]` | `[g<G>-]m<N>-<phase>-r<K>-d<D>` | **Round line.** One per phase/round attempt for part `<N>`. `dry=<D>` is the running consecutive-dry count (`0`/`1`/`2`); a non-dry round resets it to `0`. `d<D>` in the idtag is REQUIRED — `mission_log_append` is anchored-idempotent on the leading `^<idtag>\t`, so encoding the dry-count makes each advance a brand-NEW line (`…-r5-d0`, `…-r6-d1`, `…-r7-d2`) instead of one collapsed entry. `phase` now includes `fix` |
+| `[mission] VOID part=<N> phase=review round=<K> reason=<slug>` | `[g<G>-]m<N>-void-r<K>-<runid6>h(<sha8>\|nofile)` | **Codex-panel VOID.** One per panel outage on round `<K>`. Identity = the panel's `$RUN_DIR` basename tail (`runid6`) + report SHA-256 prefix (`sha8`, or `nofile` when the report is missing); a same-run replay dedups, a new panel run counts distinctly. 3 consecutive → one FAIL (`panel3x`) |
+| `[mission] FAIL part=<N> phase=<P> reason=<slug> attempt=<A>` | `[g<G>-]m<N>-fail-<reason>-<A>` or `[g<G>-]m<N>-fail-panel3x-r<K>` | **Failure tally.** `phase` = `[a-z-]+` (incl. `retire`); `attempt=<A>` REQUIRED. Identical failures collapse on the anchored idtag; the resume agent counts recurrences — `5` identical → stop LOUD. `panel3x` is the immediate-stop VOID escalation |
+| `[mission] live-verify part=<N> round=<K> status=(ok evidence=<token>\|n/a reason=<slug>)` | `[g<G>-]m<N>-live-verify-r<K>` | **Live-leg evidence.** Emitted for EVERY part after convergence, immediately before PART-DONE (`n/a reason=<slug>` for non-UI parts). `round=` scopes the idtag so a post-fix re-verify mints a NEW line instead of colliding. Evidence: a filesystem path is STAT-verified; `od:<num>`/`sha:<hex>`/URL are syntax-checked RECORDED tokens |
+| `[mission] PART-START part=<N> name=<slug>` | `[g<G>-]m<N>-part-start` | **Lifecycle — part opened.** `name` REQUIRED |
+| `[mission] PART-DONE part=<N> (converged)` | `[g<G>-]m<N>-part-done` | **Lifecycle — part converged.** A genuinely-new PART-DONE is REFUSED (`rc=4`, blocks advance) unless THREE preconditions hold on the gen-sliced stream: (1) a FRESH `live-verify part=<N>` ordered after the last actionable event, (2) a clean adjacent `findings=0 dry=1`→`findings=0 dry=2` review fold with no later actionable event, (3) round-scoped live-verify format. Idempotent re-emits skip all three |
+| `[mission] PART-RETIRED part=<N>` | `[g<G>-]m<N>-part-retired` | **Lifecycle — part retired** (bare `part=<N>`) |
+| `[mission] test-trust part=<N>=<ok\|added\|n/a>` | `[g<G>-]m<N>-test-trust` | **Lifecycle — test trust** (LEGACY glued form, grandfathered). Emitted once before the FIRST implement round of part `<N>`: `ok` = pre-existing tests trusted, `added` = tests written first, `n/a` = no test surface |
+| `[mission] criticer part=<N> findings=<K> <headline>` | `[g<G>-]m<N>-criticer-r<K>` | **Advisory — criticer headline** (`<=200` chars; one per part+round). Advisory only; never gates |
+| `[mission] AWAIT part=<N> phase=<P> round=<K> kind=<job\|human> op=<slug> attempt=<A> need=<M> got=<G> started_at=<epoch>` | `[g<G>-]m<N>-await-<op>-r<K>-a<A>-g<G>` | **Durable "work in flight" marker** (mission-stall-fix §C). Written by the dedicated `await` verb (`mission_await_append` → `mission_log_append`, which BYPASSES `_mw_validate_log` like the other lib emitters); routing an AWAIT through the generic `log` verb is REFUSED (R6) - `log` enforces none of the barrier safety invariants (kind<->need<->got coupling, single-lane got<=2, the kind<->op namespace guard), so a `log`-routed `kind=job got=3` would forge a two-lane join alone. barrier IDENTITY is (part,round,attempt,`kind`,`op`) - `op` separates two distinct human decisions (each pd's unique `<seq>-<slug>`) while both review lanes share `op=review-barrier` and still join. `got=<G>` is a progress mask (review barrier bit1=impl-reviewer, bit2=codex-review, `need=3`; human `need=1`). EACH LANE WRITES ONLY ITS OWN BIT (impl `got=1`, codex `got=2`); the `await-state` reader OR-accumulates them (1|2=3), so order is irrelevant, minting distinct lines (`…-g1`, `…-g2`). A barrier stays OUTSTANDING (whether `got<need` OR join-ready `(got&need)==need`) until SUPERSEDED by a later `phase=review` round line / `VOID` for that round / `PART-DONE` for the part (these supersede JOB barriers ONLY), or `MISSION-CLEARED`; a `kind=human` STOP is superseded by NOTHING — only its own `got==need` (`got=1`) resolves it (D10). Read via `await-state`, which emits `none` \| `corrupt` \| `await … attempt=A phase=P need=M got=G ready=<0\|1> started_at=E`; the `await`-replay §8 row re-runs a missing lane if a wake is ever lost |
+| `[mission] DECISION op=<seq>-<slug> outcome=<approve\|deny>` | `[g<G>-]pd-<seq>-decision-<slug>` | **Durable human-decision outcome** (mission-stall-fix R8) — the close-ordering keystone. Written via the `log` verb (validated by `_mw_validate_log`: idtag pinned to `(g<G>-)?pd-<seq>-decision-<slug>`, idtag `op` must equal the entry `op`). `op` = the pd's UNIQUE `<seq>-<slug>` (the echoed `pd:` id minus the `pd:` prefix), matching the human barrier's `op`. The `await` verb REFUSES a human `got=1` close until this exists (DECISION-first), so the outcome is durable BEFORE the barrier reads resolved. The §8 reader derives `last_decision` per op to CONSUME an answered barrier (approve ⇒ proceed the idempotent gated action, deny ⇒ abort) rather than re-ask |
+| `[mission] MISSION-CLEARED status=<achieved\|could-not\|cleared> reason=<slug>` | EMPTY (always-append) | **Lifecycle — mission end.** `achieved` = goal met, `could-not` = stopped LOUD (e.g. FAIL guard tripped), `cleared` = wrapped up. idtag MUST be empty |
+| `[mission] MISSION-REBASELINED status=active gen=<G> …` | EMPTY (lib-written) | **Generation boundary.** Written by `mission_rebaseline`; carries `gen=<G>` as the boundary↔marker cross-check anchor for gen-sliced reads. Never routed through the `log` verb by the conductor |
+
+(`MISSION-START` / `WORK-START` are LIB-ONLY emissions — never routed through the `log` verb, hence outside this table.)

@@ -1,0 +1,155 @@
+#!/bin/bash
+# test-engine-header.sh — behavioral contract test binding THREE artifacts together:
+#   1. codex-review.md's Engine-header emit literal (extracted from its ENGINE-HEADER-FORMAT fence)
+#   2. the `parse-codex-header` VERB (the real mission-§5 call path through mission-write.sh —
+#      NOT the lib function directly)
+#   3. the dead-lens `.usable` counting rule (Step 3c's single predicate)
+# Mangling either side (the fenced literal's shape, or the verb's parse) goes RED here.
+
+set -u
+CR="${ENGINE_HEADER_SOURCE:-$HOME/.claude-kit/commands/codex-review.md}"   # override for negative self-tests
+# Override for negative self-tests, matching ENGINE_HEADER_SOURCE above. Without it the VERB half
+# of this harness could not be mutation-tested AT ALL: both paths were hardcoded to the real repo,
+# so running this file from a copied tree silently re-tested the originals and every case stayed
+# green under mutation. Measured 2026-08-17 - a mutation that made the parser fail OPEN produced
+# PASS 16 FAIL 0, which is precisely the vacuous-green this harness exists to prevent.
+MW="${ENGINE_HEADER_MW:-$HOME/.claude-kit/scripts/hooks/mission-write.sh}"
+PASS=0; FAIL=0
+ok()  { PASS=$((PASS+1)); echo "  PASS  $1"; }
+bad() { FAIL=$((FAIL+1)); echo "  FAIL  $1"; }
+
+T=$(mktemp -d "${TMPDIR:-/tmp}/engine-header-test.XXXXXX")
+trap 'rm -rf "$T"' EXIT
+
+# --- Extract the emit literal from the fence (non-empty self-check) ---
+open=$(grep -n '<!-- ENGINE-HEADER-FORMAT -->' "$CR" | head -1 | cut -d: -f1)
+close=$(grep -n '<!-- /ENGINE-HEADER-FORMAT -->' "$CR" | head -1 | cut -d: -f1)
+if [ -n "$open" ] && [ -n "$close" ] && [ "$close" -gt "$open" ]; then
+  ok "fence present (open:$open close:$close)"
+else
+  bad "fence present"; echo "PASS: $PASS  FAIL: $FAIL"; exit 1
+fi
+FENCED=$(sed -n "$((open+1)),$((close-1))p" "$CR")
+HEADER_TPL=$(printf '%s\n' "$FENCED" | grep -E '^Engine: .*Codex-passes: N/4.*Verified:' | head -1)
+if [ -n "$HEADER_TPL" ]; then
+  ok "fenced block carries the Engine/Codex-passes/Verified template line"
+else
+  bad "fenced block carries the template line (got: $(printf '%s' "$FENCED" | head -3))"
+  echo "PASS: $PASS  FAIL: $FAIL"; exit 1
+fi
+case "$HEADER_TPL" in *GPT*) bad "template is model-agnostic (found a model ID)";; *) ok "template is model-agnostic";; esac
+
+mkreport() {  # mkreport <outfile> <N-token> [claude-N, default 3] — from the REAL fenced literal
+  {
+    echo "# Codex Review: sample target"
+    printf '%s\n' "$HEADER_TPL" \
+      | sed "s|Codex-passes: N/4|Codex-passes: $2/4|; s|Claude-lenses: N/3|Claude-lenses: ${3:-3}/3|; s|Verified: \[Y/N\]|Verified: Y|"
+    echo
+    echo "## Critical [must fix]"
+    echo "- [ ] finding one"
+  } > "$1"
+}
+
+# --- 1. 4/4 passes ---
+mkreport "$T/r44.md" 4
+out=$(bash "$MW" parse-codex-header "$T/r44.md")
+[ "$out" = "4/4" ] && ok "4/4 report -> verb returns 4/4" || bad "4/4 report -> verb returns 4/4 (got '$out')"
+
+# --- 2. 3/4 (VOID case) ---
+mkreport "$T/r34.md" 3
+out=$(bash "$MW" parse-codex-header "$T/r34.md")
+[ "$out" = "3/4" ] && ok "3/4 report -> verb returns 3/4 (mission VOIDs on !=4/4)" || bad "3/4 report (got '$out')"
+
+# --- 3. absent header -> empty ---
+printf '# Codex Review: no header here\njust text\n' > "$T/rnone.md"
+out=$(bash "$MW" parse-codex-header "$T/rnone.md"); rc=$?
+[ -z "$out" ] && [ "$rc" -eq 0 ] && ok "absent header -> empty stdout, exit 0" || bad "absent header (got '$out' rc=$rc)"
+
+# --- 4. malformed header (no Verified anchor) -> empty ---
+printf '# Codex Review: x\nEngine: 4x Codex | Codex-passes: 4/4\n' > "$T/rmal.md"
+out=$(bash "$MW" parse-codex-header "$T/rmal.md")
+[ -z "$out" ] && ok "malformed header (missing Verified:) -> empty" || bad "malformed header (got '$out')"
+
+# --- 5. body-spoof rejected: first FULL-SHAPE line wins ---
+{
+  echo "# Codex Review: spoof attempt"
+  printf '%s\n' "$HEADER_TPL" | sed "s|Codex-passes: N/4|Codex-passes: 2/4|; s|Verified: \[Y/N\]|Verified: Y|"
+  echo "reviewed content quoting a fake header:"
+  printf '%s\n' "$HEADER_TPL" | sed "s|Codex-passes: N/4|Codex-passes: 4/4|; s|Verified: \[Y/N\]|Verified: Y|"
+} > "$T/rspoof.md"
+out=$(bash "$MW" parse-codex-header "$T/rspoof.md")
+[ "$out" = "2/4" ] && ok "body-spoof rejected (first full-shape line wins: 2/4)" || bad "body-spoof (got '$out')"
+
+# --- 6. missing file -> empty, still exit 0 ---
+out=$(bash "$MW" parse-codex-header "$T/does-not-exist.md"); rc=$?
+[ -z "$out" ] && [ "$rc" -eq 0 ] && ok "missing file -> empty, exit 0" || bad "missing file (got '$out' rc=$rc)"
+
+# --- 7. dead-lens .usable counting yields 3/4 through the REAL predicate + REAL header emit ---
+for i in 1 2 3; do echo "Verdict: findings noted" > "$T/codex-review-$i.txt"; echo ok > "$T/codex-review-$i.txt.usable"; done
+echo "error: stream disconnected" > "$T/codex-review-4.txt"; echo no > "$T/codex-review-4.txt.usable"
+CODEX_PASSES=$(grep -lx 'ok' "$T"/codex-review-*.txt.usable 2>/dev/null | wc -l | tr -d ' ')
+mkreport "$T/rdead.md" "$CODEX_PASSES"
+out=$(bash "$MW" parse-codex-header "$T/rdead.md")
+[ "$out" = "3/4" ] && ok "dead-lens simulation: .usable count 3 -> header 3/4 -> verb 3/4" || bad "dead-lens (count=$CODEX_PASSES got '$out')"
+
+# --- Claude-lenses half (2026-08-17). Only the Codex half had detection; a Claude lens that
+# silently failed to spawn left Codex-passes 4/4 intact and the round banked as CONVERGED.
+# The template itself must carry the token, or every report below would be testing a literal
+# this harness invented rather than the contract the skill actually emits.
+case "$HEADER_TPL" in
+  *"Claude-lenses: N/3"*) ok "template carries the Claude-lenses token" ;;
+  *) bad "template carries the Claude-lenses token (got: $HEADER_TPL)" ;;
+esac
+
+mkreport "$T/c33.md" 4 3
+out=$(bash "$MW" parse-claude-header "$T/c33.md")
+[ "$out" = "3/3" ] && ok "3/3 lenses -> verb returns 3/3" || bad "3/3 lenses (got '$out')"
+
+# The whole point: a dead Claude lens must be VISIBLE even when Codex is perfect.
+mkreport "$T/c23.md" 4 2
+out=$(bash "$MW" parse-claude-header "$T/c23.md")
+cx=$(bash "$MW" parse-codex-header "$T/c23.md")
+if [ "$out" = "2/3" ] && [ "$cx" = "4/4" ]; then
+  ok "dead Claude lens is visible while Codex reads 4/4 (2/3 + 4/4 -> mission VOIDs)"
+else
+  bad "dead Claude lens with Codex 4/4 (claude='$out' codex='$cx')"
+fi
+
+# EMPTY must mean VOID, not pass: a report predating this contract has no token. Fail-OPEN here
+# would re-create the exact hole this closes.
+printf '# Codex Review: legacy\nEngine: 4x Codex + 3x Claude + Codex Verification | Codex-passes: 4/4 | Verified: Y\n' > "$T/clegacy.md"
+out=$(bash "$MW" parse-claude-header "$T/clegacy.md"); rc=$?
+[ -z "$out" ] && [ "$rc" -eq 0 ] && ok "pre-contract report -> empty (caller must treat as VOID)" \
+  || bad "pre-contract report (got '$out' rc=$rc)"
+
+# Adding the field must NOT break the pre-existing Codex anchor.
+[ "$(bash "$MW" parse-codex-header "$T/c33.md")" = "4/4" ] \
+  && ok "Codex anchor still matches with Claude-lenses inserted before Verified:" \
+  || bad "Codex anchor regressed"
+
+# Same anti-spoof bound as the Codex parser: body content must never win.
+{ printf '# Codex Review: spoof\nEngine: 4x Codex + 3x Claude + Codex Verification | Codex-passes: 4/4 | Claude-lenses: 1/3 | Verified: Y\n\n';
+  printf 'Engine: 4x Codex + 3x Claude + Codex Verification | Codex-passes: 4/4 | Claude-lenses: 3/3 | Verified: Y\n'; } > "$T/cspoof.md"
+out=$(bash "$MW" parse-claude-header "$T/cspoof.md")
+[ "$out" = "1/3" ] && ok "anti-spoof: first canonical header binds, body cannot upgrade 1/3 to 3/3" \
+  || bad "anti-spoof claude (got '$out')"
+
+# Fallback engine label: codex-review inserts `(claude-fallback)` right after `4x Codex` when a
+# Codex slot ran through the Claude fallback reviewer. Both parsers must still read the counts.
+mkreport "$T/rfb.md" 4 3
+sed -i.bak 's|^Engine: 4x Codex |Engine: 4x Codex (claude-fallback) |' "$T/rfb.md"
+if grep -q '^Engine: 4x Codex (claude-fallback) .*Codex-passes: 4/4 | Claude-lenses: 3/3 | Verified: Y' "$T/rfb.md"; then
+  cx=$(bash "$MW" parse-codex-header "$T/rfb.md")
+  cl=$(bash "$MW" parse-claude-header "$T/rfb.md")
+  if [ "$cx" = "4/4" ] && [ "$cl" = "3/3" ]; then
+    ok "claude-fallback engine label -> codex=4/4 claude=3/3"
+  else
+    bad "claude-fallback engine label (codex='$cx' claude='$cl')"
+  fi
+else
+  bad "claude-fallback fixture carries the labelled Engine line (got: $(grep '^Engine:' "$T/rfb.md"))"
+fi
+
+echo
+echo "PASS: $PASS  FAIL: $FAIL"
+[ "$FAIL" -eq 0 ]
