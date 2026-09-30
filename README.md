@@ -14,7 +14,7 @@
 
 ---
 
-This is a setup kit for **[Claude Code](https://code.claude.com/docs/en/overview)**, 
+      This is a setup kit for **[Claude Code](https://code.claude.com/docs/en/overview)**
 
 A multi-model web of commands, built to be driven dynamically by an agent - the answer to vibe
 coding. **This is agentic engineering.**
