@@ -2,8 +2,6 @@
 
 # omid_skills
 
-**A Claude Code setup that lets Claude work for hours without losing the plot.**
-
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/omdiidi/omid_skills?style=social)](https://github.com/omdiidi/omid_skills/stargazers)
 [![Built for Claude Code](https://img.shields.io/badge/built%20for-Claude%20Code-d97757)](https://code.claude.com/docs/en/overview)
@@ -19,8 +17,7 @@ This is a setup kit for **[Claude Code](https://code.claude.com/docs/en/overview
 A multi-model web of commands, built to be driven dynamically by an agent - the answer to vibe
 coding. **This is agentic engineering.**
 
-We solve the current constraints of context windows, long-running sessions, misalignment, and
-squeezing performance out of frontier models.
+A Claude Code setup that lets Claude work for hours without losing the plot.
 
 This is a web of specialized commands that agents call as they work. Each command can trigger
 multiple specialist subagents for research, planning, implementation, testing, or review. Work
