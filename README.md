@@ -19,9 +19,8 @@ This is a setup kit for **[Claude Code](https://code.claude.com/docs/en/overview
 A multi-model web of commands, built to be driven dynamically by an agent - the answer to vibe
 coding. **This is agentic engineering.**
 
-It tackles the real limits of working with frontier models today: context windows that run out,
-long sessions that drift, agents that lose alignment with their goal, and performance left on the
-table.
+We solve the current constraints of context windows, long-running sessions, misalignment, and
+squeezing performance out of frontier models.
 
 This is a web of specialized commands that agents call as they work. Each command can trigger
 multiple specialist subagents for research, planning, implementation, testing, or review. Work
