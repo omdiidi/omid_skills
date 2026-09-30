@@ -2,7 +2,7 @@
 
 # omid_skills
 
-**We solve the current constraints of context windows, long-running sessions, misalignment, and squeezing performance out of frontier models.**
+**We solve the current constraints of context windows, long-running sessions, misalignment, and squeezing performance out of frontier models at a feasible cost.**
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/omdiidi/omid_skills?style=social)](https://github.com/omdiidi/omid_skills/stargazers)
