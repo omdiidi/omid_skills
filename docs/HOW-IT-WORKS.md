@@ -71,7 +71,7 @@ Because the mission file survives compaction, the resumed chat reads it and cont
 part at the same phase. Hooks keep an unattended mission moving: one asks you, as soon as you're
 back, any questions the mission wrote down while you were away, and one catches a turn that
 ended without scheduling its next step. That's how a single build can run for hours (tested up
-to 23 hours non-stop). Opt-in and heavy; overkill for small work, unbeatable for big ones.
+to 38 hours non-stop). Opt-in and heavy; overkill for small work, unbeatable for big ones.
 
 ## 3. Reviewers between every step
 

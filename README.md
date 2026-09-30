@@ -13,22 +13,25 @@
 </div>
 
 ---
-
-      This is a setup kit for **[Claude Code](https://code.claude.com/docs/en/overview)**
+This is a setup kit for **[Claude Code](https://code.claude.com/docs/en/overview)**.
 
 A multi-model web of commands, built to be driven dynamically by an agent - the answer to vibe
 coding. **This is agentic engineering.**
 
+It tackles the real limits of working with frontier models today: context windows that run out,
+long sessions that drift, agents that lose alignment with their goal, and performance left on the
+table.
+
 This is a web of specialized commands that agents call as they work. Each command can trigger
 multiple specialist subagents for research, planning, implementation, testing, or review. Work
 flows through a chain of experts instead of a single model. And with a system built to preserve
-context, decisions, and progress across compactions (tested up to 23 hours non-stop), builds can
+context, decisions, and progress across compactions (tested up to 38 hours non-stop), builds can
 run for hours without losing track of their mission.
 
-Use each model for what it does best. Claude handles architecture, planning, and big-picture
-thinking. Codex handles precision, correctness, security, and verification. No single model
-carries the full workload - each is used where it's proven to perform best. The result is higher
-quality, more scalable, and much closer to what real software engineering with AI should look like.
+Use each model for what it does best. Models are trained for different strengths, so no single
+model carries the full workload - each one is used where it performs best, to get the most out of
+AI. The result is higher quality, more scalable, and much closer to what real software engineering
+with AI should look like.
 
 ## Quick start
 
@@ -41,16 +44,20 @@ Clone https://github.com/omdiidi/omid_skills into ~/.claude-kit and follow its S
 ## What you get
 
 **Long sessions that don't fall apart.** Every AI chat has a memory limit (its "context"). When
-it fills up, Claude Code squeezes the conversation down ("compacts" it) and details get lost. This
-kit turns that cliff into a smooth handover:
+it fills up, Claude Code squeezes the conversation down ("compacts" it) and details get lost.
+Worse, the agent can't see its own context window, so it has no idea it's about to run out. This
+kit fixes that: the agent always knows how full it is and stays aligned with where it really
+stands. The cliff becomes a smooth handover:
 
-1. **A context meter** sits in your status bar, so you always see how full the chat is.
+1. **A context meter** sits in your status bar, so you and the agent always see how full the chat is.
 2. **Gentle nudges** arrive at 50%, 65% and 75%: first a heads-up, then "finish this task", then
-   "save now".
+   "save now". The agent sees them too, so it plans its work around the space it actually has left.
 3. **`/pre-compact`** writes a detailed handoff note: what you're doing, what you decided, what
    you tried, what's left.
-4. **Claude compacts**, automatically if you're in the macOS Terminal app.
-5. **It picks up exactly where it left off**, reading its own handoff note first.
+4. **Claude compacts on its own** if you run Claude Code in the Mac Terminal app. Anywhere else,
+   you type `/compact`.
+5. **It picks up exactly where it left off.** After compacting, it reads its own handoff note and
+   carries on by itself. None of this is built into Claude Code; it's fully custom.
 
 **`/mission`** rides on top of that loop for really big builds. You agree on a roadmap once, and
 it plans, builds and reviews each part on its own, across as many compactions as it takes. Opt-in
@@ -63,8 +70,9 @@ and heavy; overkill for small work, unbeatable for big ones.
       ─▶ implementation-reviewer + criticer ─▶ /codex-review ─▶ fixes ─▶ done
 ```
 
-Every arrow is a file written to disk and read by the next step, so nothing depends on
-copy-paste. Every stage checks itself before handing off.
+Every step writes its results to files on disk, and the next step reads them. The plan, the
+decisions and the progress live outside the model, so nothing is lost when a chat compacts and
+nothing depends on copy-paste. Every stage checks itself before handing off.
 
 ## Commands
 
